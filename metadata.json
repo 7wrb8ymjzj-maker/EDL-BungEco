@@ -1,0 +1,6 @@
+{
+  "name": "BUNG'ECO - État des Lieux",
+  "description": "Application d'état des lieux professionnelle pour modules, bungalows et sanitaires de chantier BUNG'ECO.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
