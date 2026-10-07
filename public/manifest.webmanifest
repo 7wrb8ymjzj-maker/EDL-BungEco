@@ -1,0 +1,28 @@
+{
+  "name": "EDL BUNG'ECO",
+  "short_name": "EDL BUNG'ECO",
+  "description": "États des lieux et contrôles avant livraison BUNG'ECO",
+  "start_url": "/EDL-BungEco/",
+  "scope": "/EDL-BungEco/",
+  "display": "standalone",
+  "background_color": "#26313B",
+  "theme_color": "#26313B",
+  "icons": [
+    {
+      "src": "/EDL-BungEco/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/EDL-BungEco/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/EDL-BungEco/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
