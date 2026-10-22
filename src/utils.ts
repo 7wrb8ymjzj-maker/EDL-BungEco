@@ -149,6 +149,56 @@ async function optimizeSketchForPDF(dataUrl: string): Promise<string> {
 }
 
 /**
+ * Wait until images in the temporary PDF layout have decoded before html2canvas
+ * captures them. An image failure is reported rather than silently printing an
+ * empty frame. This does not change stored photos or the visible application.
+ */
+async function waitForPDFImages(container: HTMLElement): Promise<void> {
+  const images = Array.from(container.querySelectorAll("img"));
+  await Promise.all(images.map(async (img, index) => {
+    const source = img.getAttribute("src") || "";
+    if (!source) {
+      throw new Error(`Image PDF ${index + 1} : source absente.`);
+    }
+    if (!img.complete) {
+      await new Promise<void>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout>;
+        const cleanup = () => {
+          clearTimeout(timer);
+          img.removeEventListener("load", onLoad);
+          img.removeEventListener("error", onError);
+        };
+        const onLoad = () => { cleanup(); resolve(); };
+        const onError = () => { cleanup(); reject(new Error(`Image PDF ${index + 1} : chargement impossible.`)); };
+        img.addEventListener("load", onLoad, { once: true });
+        img.addEventListener("error", onError, { once: true });
+        timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Image PDF ${index + 1} : délai de chargement dépassé.`));
+        }, 15000);
+        if (img.complete) { cleanup(); resolve(); }
+      });
+    }
+    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+      throw new Error(`Image PDF ${index + 1} : image illisible.`);
+    }
+    if (typeof img.decode === "function") {
+      let decodeTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          img.decode(),
+          new Promise<never>((_, reject) => {
+            decodeTimer = setTimeout(() => reject(new Error(`Image PDF ${index + 1} : décodage trop long.`)), 15000);
+          }),
+        ]);
+      } finally {
+        if (decodeTimer) clearTimeout(decodeTimer);
+      }
+    }
+  }));
+}
+
+/**
  * Generates an elegant PDF document from an inspection report and triggers a direct download.
  */
 export async function buildInspectionPDFDoc(
@@ -783,6 +833,9 @@ export async function buildInspectionPDFDoc(
 
     document.body.appendChild(pagesContainer);
 
+    onProgress?.("Vérification du chargement des photos et des plans...");
+    await waitForPDFImages(pagesContainer);
+
     onProgress?.("Génération des pages PDF de l'état des lieux...");
     const pageDivs = Array.from(pagesContainer.children) as HTMLDivElement[];
     
@@ -1305,6 +1358,9 @@ export async function buildDeliveryControlPDFDoc(
     printContainer.innerHTML = htmlContent;
     document.body.appendChild(printContainer);
 
+    onProgress?.("Vérification du chargement des photos du contrôle...");
+    await waitForPDFImages(printContainer);
+
     onProgress?.("Prise des clichés du rapport de contrôle...");
     const canvas = await html2canvas(printContainer, {
       scale: 2, // High resolution retina rendering
@@ -1487,4 +1543,3 @@ export async function shareOrEmailPDF({
 
   return { shared: true, method: "mailto" };
 }
-
