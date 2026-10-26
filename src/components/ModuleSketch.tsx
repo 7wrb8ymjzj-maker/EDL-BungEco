@@ -7,6 +7,7 @@ import React, { useRef, useEffect, useState } from "react";
 import { ModuleType, InspectionCharacteristics } from "../types";
 import { Pen, Eraser, Trash2, ShieldAlert, Sparkles, Undo } from "lucide-react";
 import { SANITAIRE_6M_SX_BASE64 } from "./sanitaire_6m_sx_base64";
+import { isModuleWithPhoto, getModulePhotoPath } from "../constants/modulePhotos";
 
 interface ModuleSketchProps {
   moduleType: ModuleType;
@@ -71,6 +72,25 @@ export default function ModuleSketch({
     };
     img.src = customSanitaireImage || SANITAIRE_6M_SX_BASE64;
   }, [customSanitaireImage]);
+
+  const modulePhotoUrl = isModuleWithPhoto(moduleType) ? getModulePhotoPath(moduleType) : null;
+  const photoRef = useRef<HTMLImageElement | null>(null);
+  const [photoLoaded, setPhotoLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!modulePhotoUrl) {
+      photoRef.current = null;
+      setPhotoLoaded(false);
+      return;
+    }
+    setPhotoLoaded(false);
+    const img = new Image();
+    img.onload = () => {
+      photoRef.current = img;
+      setPhotoLoaded(true);
+    };
+    img.src = modulePhotoUrl;
+  }, [modulePhotoUrl]);
 
   const [currentColor, setCurrentColor] = useState<string>("#ef4444"); // Red (damage)
   const [currentWidth, setCurrentWidth] = useState<number>(3);
@@ -247,7 +267,7 @@ export default function ModuleSketch({
     }, 200);
 
     return () => clearTimeout(timer);
-  }, [canvasSize, moduleType, characteristics, strokes, currentStroke, doorPos, winPos, climTrappePos, evierPos, wcPos, douchePos, alimPos, customElements, imgLoaded]);
+  }, [canvasSize, moduleType, characteristics, strokes, currentStroke, doorPos, winPos, climTrappePos, evierPos, wcPos, douchePos, alimPos, customElements, imgLoaded, photoLoaded]);
 
   const drawModuleBase = (
     ctx: CanvasRenderingContext2D,
@@ -300,13 +320,33 @@ export default function ModuleSketch({
       return;
     }
 
+    if (isModuleWithPhoto(type)) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(mx, my, mw, mh);
+      if (photoRef.current && photoLoaded) {
+        const img = photoRef.current;
+        const fit = Math.min(mw / img.naturalWidth, mh / img.naturalHeight);
+        const dw = img.naturalWidth * fit;
+        const dh = img.naturalHeight * fit;
+        const dx = mx + (mw - dw) / 2;
+        const dy = my + (mh - dh) / 2;
+        ctx.drawImage(img, dx, dy, dw, dh);
+      } else {
+        ctx.fillStyle = "#64748b";
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Chargement de la photo...", mx + mw / 2, my + mh / 2);
+      }
+      ctx.restore();
+      return;
+    }
+
     // Draw solid white cabin bounds (neutral background - "La couleur ne doit pas apparaitre")
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(mx, my, mw, mh);
     ctx.strokeStyle = "#334155";
     ctx.lineWidth = 3.5;
-
-    const removedPanel = opts.panneauSupprime;
 
     // Draw Left and Right walls (Pignons)
     ctx.beginPath();
@@ -319,8 +359,12 @@ export default function ModuleSketch({
     ctx.lineTo(mx + mw, my + mh);
     ctx.stroke();
 
+    const removedPanel = opts.panneauSupprime;
+    const isHautRemoved = removedPanel === "haut" || removedPanel === "les_deux";
+    const isBasRemoved = removedPanel === "bas" || removedPanel === "les_deux";
+
     // Top 6m wall (Façade avant)
-    if (removedPanel === "haut") {
+    if (isHautRemoved) {
       ctx.save();
       ctx.strokeStyle = "#cbd5e1";
       ctx.lineWidth = 2;
@@ -345,7 +389,7 @@ export default function ModuleSketch({
     }
 
     // Bottom 6m wall (Façade arrière)
-    if (removedPanel === "bas") {
+    if (isBasRemoved) {
       ctx.save();
       ctx.strokeStyle = "#cbd5e1";
       ctx.lineWidth = 2;
@@ -3022,7 +3066,11 @@ export default function ModuleSketch({
             </span>
             {characteristics.panneauSupprime && (
               <span className="text-[10px] font-bold text-red-650 bg-red-100 px-2 py-0.5 rounded">
-                Panneau {characteristics.panneauSupprime === "haut" ? "Haut" : "Bas"} retiré
+                {characteristics.panneauSupprime === "les_deux"
+                  ? "Panneaux Haut et Bas retirés"
+                  : characteristics.panneauSupprime === "haut"
+                  ? "Panneau Haut retiré"
+                  : "Panneau Bas retiré"}
               </span>
             )}
           </div>
@@ -3031,35 +3079,49 @@ export default function ModuleSketch({
             <button
               type="button"
               onClick={() => {
-                onUpdateCharacteristics?.((prev) => ({
-                  ...prev,
-                  panneauSupprime: prev.panneauSupprime === "haut" ? null : "haut",
-                }));
+                onUpdateCharacteristics?.((prev) => {
+                  const current = prev.panneauSupprime;
+                  let next: "haut" | "bas" | "les_deux" | null = null;
+                  if (current === "haut") next = null;
+                  else if (current === "les_deux") next = "bas";
+                  else if (current === "bas") next = "les_deux";
+                  else next = "haut";
+                  return { ...prev, panneauSupprime: next };
+                });
               }}
               className={`text-[11px] font-bold px-2.5 py-1.5 rounded transition cursor-pointer border ${
-                characteristics.panneauSupprime === "haut"
+                characteristics.panneauSupprime === "haut" || characteristics.panneauSupprime === "les_deux"
                   ? "bg-red-600 text-white border-red-700 shadow-xs"
                   : "bg-white text-slate-700 border-slate-250 hover:bg-slate-50"
               }`}
             >
-              {characteristics.panneauSupprime === "haut" ? "✓ Panneau Haut retiré" : "Retirer Panneau Haut (6m)"}
+              {characteristics.panneauSupprime === "haut" || characteristics.panneauSupprime === "les_deux"
+                ? "✓ Panneau Haut retiré"
+                : "Retirer Panneau Haut (6m)"}
             </button>
 
             <button
               type="button"
               onClick={() => {
-                onUpdateCharacteristics?.((prev) => ({
-                  ...prev,
-                  panneauSupprime: prev.panneauSupprime === "bas" ? null : "bas",
-                }));
+                onUpdateCharacteristics?.((prev) => {
+                  const current = prev.panneauSupprime;
+                  let next: "haut" | "bas" | "les_deux" | null = null;
+                  if (current === "bas") next = null;
+                  else if (current === "les_deux") next = "haut";
+                  else if (current === "haut") next = "les_deux";
+                  else next = "bas";
+                  return { ...prev, panneauSupprime: next };
+                });
               }}
               className={`text-[11px] font-bold px-2.5 py-1.5 rounded transition cursor-pointer border ${
-                characteristics.panneauSupprime === "bas"
+                characteristics.panneauSupprime === "bas" || characteristics.panneauSupprime === "les_deux"
                   ? "bg-red-600 text-white border-red-700 shadow-xs"
                   : "bg-white text-slate-700 border-slate-250 hover:bg-slate-50"
               }`}
             >
-              {characteristics.panneauSupprime === "bas" ? "✓ Panneau Bas retiré" : "Retirer Panneau Bas (6m)"}
+              {characteristics.panneauSupprime === "bas" || characteristics.panneauSupprime === "les_deux"
+                ? "✓ Panneau Bas retiré"
+                : "Retirer Panneau Bas (6m)"}
             </button>
 
             {characteristics.panneauSupprime && (
@@ -3073,7 +3135,7 @@ export default function ModuleSketch({
                 }}
                 className="text-[11px] font-bold px-2.5 py-1.5 rounded transition cursor-pointer bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100"
               >
-                ↺ Rétablir le panneau
+                ↺ Rétablir les panneaux
               </button>
             )}
           </div>

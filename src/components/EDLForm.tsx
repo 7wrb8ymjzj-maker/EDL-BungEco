@@ -13,6 +13,8 @@ import PhotoSection from "./PhotoSection";
 import ObservationsSection from "./ObservationsSection";
 import ActionsBar from "./ActionsBar";
 import SignaturesSection from "./SignaturesSection";
+import ModulePhotoSection from "./ModulePhotoSection";
+import { isModuleWithPhoto } from "../constants/modulePhotos";
 import { AlertOctagon } from "lucide-react";
 
 interface EDLFormProps {
@@ -111,7 +113,7 @@ export default function EDLForm({
     eclairageType: "neons",
     commandeEclairage: "interrupteur",
     configurationType: "Pignon",
-    climTrappe: "none",
+    climTrappe: "Trappe",
     trappeTaille: "56cm",
     cuisineType: "none",
     cuisine120: false,
@@ -119,7 +121,7 @@ export default function EDLForm({
     wcCount: 0,
     presenceDouche: false,
     mobilier: { ...INITIAL_MOBILIER },
-    cles: 2,
+    cles: undefined,
     couleurRAL: "RAL 7016",
     chauffeEau: false,
     typeWC: "none",
@@ -152,7 +154,7 @@ export default function EDLForm({
   const [formError, setFormError] = useState<string | null>(null);
 
   // Dynamic keys to repairs link
-  const prevClesRef = useRef<number | undefined>(2);
+  const prevClesRef = useRef<number | null | undefined>(undefined);
 
   // Load existing inspection if in edit mode, or reset if creating a new one
   useEffect(() => {
@@ -200,7 +202,7 @@ export default function EDLForm({
         eclairageType: "neons",
         commandeEclairage: "interrupteur",
         configurationType: "Pignon",
-        climTrappe: "none",
+        climTrappe: "Trappe",
         trappeTaille: "56cm",
         cuisineType: "none",
         cuisine120: false,
@@ -208,7 +210,7 @@ export default function EDLForm({
         wcCount: 0,
         presenceDouche: false,
         mobilier: { ...INITIAL_MOBILIER },
-        cles: 2,
+        cles: undefined,
         couleurRAL: "RAL 7016",
         chauffeEau: false,
         typeWC: "none",
@@ -226,7 +228,7 @@ export default function EDLForm({
       setIsModuleNeuf(false);
       setPasDeMobilier(false);
       setRasReparations(false);
-      prevClesRef.current = 2;
+      prevClesRef.current = undefined;
       
       // Reset new fields
       setStatus("conforme");
@@ -239,17 +241,24 @@ export default function EDLForm({
     }
   }, [initialInspection]);
 
-  // Dynamic keys to repairs sync (Règle exacte : 2 -> rien, 1 -> "Double des clefs", 0 -> "Barillet à remplacer")
+  // Dynamic keys to repairs sync:
+  // - Aucune sélection / 2 clés -> aucun travail lié aux clés
+  // - 1 clé -> Double des clés à prévoir
+  // - 0 clé -> Barillet à remplacer
   useEffect(() => {
     if (prevClesRef.current === characteristics.cles) return;
     prevClesRef.current = characteristics.cles;
 
     setTravauxPrevoir((currentTravaux) => {
       const keyPhrases = [
-        "Double des clefs",
-        "- Double des clefs",
+        "Double des clés à prévoir",
+        "- Double des clés à prévoir",
         "Double des clefs à prévoir",
         "- Double des clefs à prévoir",
+        "Double des clefs",
+        "- Double des clefs",
+        "Double des clés",
+        "- Double des clés",
         "Barillet à remplacer",
         "- Barillet à remplacer",
         "Remplacement du barillet de serrure à prévoir",
@@ -260,7 +269,7 @@ export default function EDLForm({
         .filter((line) => !keyPhrases.includes(line.trim()));
 
       if (characteristics.cles === 1) {
-        lines.push("Double des clefs");
+        lines.push("Double des clés à prévoir");
       } else if (characteristics.cles === 0) {
         lines.push("Barillet à remplacer");
       }
@@ -339,31 +348,30 @@ export default function EDLForm({
       base.eclairageType = "neons";
       base.commandeEclairage = "interrupteur";
       base.configurationType = "Pignon";
-      base.climTrappe = "none";
+      base.climTrappe = "Trappe";
+      base.trappeTaille = "56cm";
       base.cuisineType = "none";
       base.cuisine120 = false;
       base.sanitaireType = "none";
       base.wcCount = 0;
       base.presenceDouche = false;
-      base.cles = 2;
       base.couleurRAL = "RAL 7016";
     } else if (type === "B5" || type === "B4") {
       base.configurationType = "Pignon";
-      base.climTrappe = "none";
+      base.climTrappe = "Trappe";
+      base.trappeTaille = "56cm";
       base.cuisineType = "none";
       base.cuisine120 = false;
       base.sanitaireType = "none";
       base.wcCount = 0;
       base.presenceDouche = false;
-      base.cles = 2;
       base.couleurRAL = "RAL 7016";
       base.commandeEclairage = "interrupteur";
     } else if (type === "S1" || type === "SS1" || type === "SD1") {
       base.chauffeEau = false;
       base.typeWC = "none";
-      base.cles = 1;
     } else if (type === "SD2" || type === "SDU" || type === "SSU") {
-      base.cles = 1;
+      // Pas de présélection de clés
     } else if (type === "Sanitaire 6m") {
       base.configSanitaire = "SX";
       base.commVestiaire = false;
@@ -387,9 +395,10 @@ export default function EDLForm({
       moduleNumber: moduleNumber.trim().toUpperCase(),
       date,
       characteristics,
-      sketchDataUrl: ["S1", "SD1", "SS1", "SD2", "SDU", "SSU", "Sanitaire 6m"].includes(moduleType)
-        ? ""
-        : sketchDataUrl,
+      sketchDataUrl:
+        ["S1", "SD1", "SS1", "SD2", "SDU", "SSU", "Sanitaire 6m"].includes(moduleType) || isModuleWithPhoto(moduleType)
+          ? ""
+          : sketchDataUrl,
       travauxPrevoir,
       observations,
       photos,
@@ -485,12 +494,14 @@ export default function EDLForm({
 
         {/* Right Side: Visual sketch, reference plan, photos & comments */}
         <div className="space-y-4">
-          {/* Section 3: Drawing Croquis or Sanitary reference image */}
+          {/* Section 3: Drawing Croquis, Sanitary reference image, or Equipment reference photo */}
           {isSanitaire ? (
             <SanitaireSection
               moduleType={moduleType}
               configSanitaire={characteristics.configSanitaire}
             />
+          ) : isModuleWithPhoto(moduleType) ? (
+            <ModulePhotoSection moduleType={moduleType} />
           ) : (
             <SketchSection
               moduleType={moduleType}

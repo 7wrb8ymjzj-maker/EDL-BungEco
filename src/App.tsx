@@ -282,6 +282,7 @@ export default function App() {
           subject,
           body: `Bonjour,\n\nVeuillez trouver ci-joint l'état des lieux du module ${saved.moduleType} n° ${modNum}.\n\nDestinataire : contact@bungeco.fr\n\nCordialement,\nL'équipe BUNG'ECO`,
           recipientEmail: "contact@bungeco.fr",
+          photos: saved.photos,
         });
       }
     } catch (err) {
