@@ -773,48 +773,78 @@ export default function CharacteristicsSection({
           </div>
         )}
 
-        {/* Keys slider for habitable and some sanitary modules */}
+        {/* Keys selector for habitable and some sanitary modules */}
         {["B4", "B5", "B6", "SD2", "SDU", "SSU", "Sanitaire 6m"].includes(moduleType) && (
-          <div className="mt-4 border-t border-slate-100 pt-4 space-y-4 text-left">
+          <div className="mt-4 border-t border-slate-100 pt-4 space-y-3 text-left">
             <div className="flex items-center justify-between">
               <div>
-                <label htmlFor="keys-slider" className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest font-sans">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest font-sans">
                   Nombre de Clés Remises
                 </label>
                 <span className="text-[10px] text-slate-450">Toute clé manquante entraînera la facturation d'un barillet.</span>
               </div>
-              <span className="text-xs font-mono font-bold text-bungeco-orange bg-orange-50 border border-orange-100 rounded px-2.5 py-1">
-                {characteristics.cles ?? 0} {characteristics.cles && characteristics.cles > 1 ? "clés" : "clé"}
-              </span>
-            </div>
-            <input
-              id="keys-slider"
-              type="range"
-              min="0"
-              max={moduleType === "Sanitaire 6m" ? 8 : 2}
-              value={characteristics.cles ?? 0}
-              onChange={(e) =>
-                setCharacteristics((prev) => ({ ...prev, cles: parseInt(e.target.value) }))
-              }
-              className="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-bungeco-orange"
-            />
-            <div className="flex justify-between text-[9px] text-slate-400 font-bold px-1">
-              {moduleType === "Sanitaire 6m" ? (
-                <>
-                  <span>0 clé</span>
-                  <span>2</span>
-                  <span>4</span>
-                  <span>6</span>
-                  <span>8 clés</span>
-                </>
+              {characteristics.cles !== undefined && characteristics.cles !== null ? (
+                <span className="text-xs font-mono font-bold text-bungeco-orange bg-orange-50 border border-orange-100 rounded px-2.5 py-1">
+                  {characteristics.cles} {characteristics.cles > 1 ? "clés" : "clé"}
+                </span>
               ) : (
-                <>
-                  <span>0 clé</span>
-                  <span>1 clé</span>
-                  <span>2 clés</span>
-                </>
+                <span className="text-xs font-mono font-bold text-slate-500 bg-slate-100 border border-slate-200 rounded px-2.5 py-1">
+                  Aucune sélection
+                </span>
               )}
             </div>
+
+            {moduleType === "Sanitaire 6m" ? (
+              <div className="grid grid-cols-5 sm:grid-cols-9 gap-1.5">
+                {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((num) => {
+                  const isSelected = characteristics.cles === num;
+                  return (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() =>
+                        setCharacteristics((prev) => ({
+                          ...prev,
+                          cles: prev.cles === num ? undefined : num,
+                        }))
+                      }
+                      className={`py-1.5 px-1 rounded-lg border text-xs font-bold transition-all cursor-pointer text-center ${
+                        isSelected
+                          ? "bg-bungeco-orange border-bungeco-orange text-white shadow-xs"
+                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {num}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-2">
+                {[0, 1, 2].map((num) => {
+                  const isSelected = characteristics.cles === num;
+                  return (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() =>
+                        setCharacteristics((prev) => ({
+                          ...prev,
+                          cles: prev.cles === num ? undefined : num,
+                        }))
+                      }
+                      className={`py-2 px-2 rounded-lg border text-xs font-bold transition-all cursor-pointer text-center ${
+                        isSelected
+                          ? "bg-bungeco-orange border-bungeco-orange text-white shadow-xs"
+                          : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {num} {num > 1 ? "clés" : "clé"}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>

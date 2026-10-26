@@ -54,7 +54,7 @@ export interface InspectionCharacteristics {
   commandeEclairage?: "interrupteur" | "detecteur" | "none";
   mobilier?: MobilierOption;
   mobilierAutreTexte?: string;
-  cles?: number;
+  cles?: number | null;
   couleurRAL?: "RAL 7016" | "RAL 9002" | "none";
 
   // S1, SS1, SD1
@@ -75,7 +75,7 @@ export interface InspectionCharacteristics {
   vidangee?: boolean;
 
   // Schéma : suppression d'une longueur de panneau (chantier)
-  panneauSupprime?: "haut" | "bas" | null;
+  panneauSupprime?: "haut" | "bas" | "les_deux" | null;
 }
 
 export interface Inspection {
@@ -99,7 +99,7 @@ export interface Inspection {
   isModuleNeuf?: boolean;
   pasDeMobilier?: boolean;
   rasReparations?: boolean;
-  panneauSupprime?: "haut" | "bas" | null;
+  panneauSupprime?: "haut" | "bas" | "les_deux" | null;
 }
 
 export type ControlAnswer = "conforme" | "non_conforme" | "sans_objet";

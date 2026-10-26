@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { 
   Plus, 
   Trash2, 
@@ -122,6 +122,66 @@ function createBlankModule(num: string = ""): ModuleControl {
   };
 }
 
+interface QuestionCardProps {
+  id: string;
+  text: string;
+  index: number;
+  value: string | undefined;
+  onChange: (id: string, val: "conforme" | "non_conforme" | "sans_objet") => void;
+}
+
+const QuestionCard = React.memo(function QuestionCard({
+  id,
+  text,
+  index,
+  value,
+  onChange,
+}: QuestionCardProps) {
+  return (
+    <div className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl space-y-2.5 flex flex-col justify-between">
+      <p className="text-[11px] font-bold text-slate-800 leading-tight">
+        {index}. {text}
+      </p>
+      
+      <div className="grid grid-cols-3 gap-1.5">
+        <button
+          type="button"
+          onClick={() => onChange(id, "conforme")}
+          className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
+            value === "conforme"
+              ? "bg-emerald-600 text-white shadow-xs font-black"
+              : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
+          }`}
+        >
+          Conforme
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange(id, "non_conforme")}
+          className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
+            value === "non_conforme"
+              ? "bg-amber-500 text-white shadow-xs font-black"
+              : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
+          }`}
+        >
+          Non Conf
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange(id, "sans_objet")}
+          className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
+            value === "sans_objet"
+              ? "bg-slate-500 text-white shadow-xs font-black"
+              : "bg-white border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100/50"
+          }`}
+        >
+          Sans Objet
+        </button>
+      </div>
+    </div>
+  );
+});
+
 export default function DeliveryControlForm({
   initialControl,
   onSave,
@@ -204,49 +264,60 @@ export default function DeliveryControlForm({
   const activeModuleIndex = modules.findIndex((m) => m.id === activeModuleId);
   const activeModule = activeModuleIndex !== -1 ? modules[activeModuleIndex] : null;
 
-  const updateActiveModule = (updatedFields: Partial<ModuleControl>) => {
-    if (activeModuleIndex === -1) return;
-    
+  const updateActiveModule = useCallback((updatedFields: Partial<ModuleControl>) => {
     setModules((prev) => {
+      const idx = prev.findIndex((m) => m.id === activeModuleId);
+      if (idx === -1) return prev;
+      
       const copy = [...prev];
-      const merged = { ...copy[activeModuleIndex], ...updatedFields };
+      const merged = { ...copy[idx], ...updatedFields };
       
-      // Calculate auto status: has reservations if any "non_conforme" in active scope
-      let isConforme = true;
-      if (isContainerModule(merged.moduleType)) {
-        const containerAnswers = [
-          merged.qc_container_labels,
-          merged.qc_container_joints,
-          merged.qc_container_clef_canne,
-        ];
-        if (containerAnswers.some((ans) => ans === "non_conforme")) {
-          isConforme = false;
+      // Only recalculate conformity status if an answer or moduleType actually changed
+      const shouldCheckStatus = Object.keys(updatedFields).some(
+        (key) => key.startsWith("q") || key === "moduleType"
+      );
+
+      if (shouldCheckStatus) {
+        let isConforme = true;
+        if (isContainerModule(merged.moduleType)) {
+          const containerAnswers = [
+            merged.qc_container_labels,
+            merged.qc_container_joints,
+            merged.qc_container_clef_canne,
+          ];
+          if (containerAnswers.some((ans) => ans === "non_conforme")) {
+            isConforme = false;
+          }
+        } else if (controlMode === "simplifie") {
+          const simplifiedAnswers = [
+            merged.qs1_labels_keys_lifting,
+            merged.qs2_holes_parecloses_closed,
+            merged.qs3_state_transport,
+            merged.qs4_serial_match,
+            merged.qs5_variants_furniture,
+          ];
+          if (simplifiedAnswers.some((ans) => ans === "non_conforme")) {
+            isConforme = false;
+          }
+        } else {
+          const activeModQ = getModuleQuestions(merged.moduleType);
+          const activeOrdQ = getOrderQuestions(merged.moduleType);
+          const questionsToCheck = [...activeModQ, ...activeOrdQ];
+          if (questionsToCheck.some((q) => (merged as any)[q.id] === "non_conforme")) {
+            isConforme = false;
+          }
         }
-      } else if (controlMode === "simplifie") {
-        const simplifiedAnswers = [
-          merged.qs1_labels_keys_lifting,
-          merged.qs2_holes_parecloses_closed,
-          merged.qs3_state_transport,
-          merged.qs4_serial_match,
-          merged.qs5_variants_furniture,
-        ];
-        if (simplifiedAnswers.some((ans) => ans === "non_conforme")) {
-          isConforme = false;
-        }
-      } else {
-        const activeModQ = getModuleQuestions(merged.moduleType);
-        const activeOrdQ = getOrderQuestions(merged.moduleType);
-        const questionsToCheck = [...activeModQ, ...activeOrdQ];
-        if (questionsToCheck.some((q) => (merged as any)[q.id] === "non_conforme")) {
-          isConforme = false;
-        }
+        merged.status = isConforme ? "conforme" : "reserves";
       }
-      
-      merged.status = isConforme ? "conforme" : "reserves";
-      copy[activeModuleIndex] = merged;
+
+      copy[idx] = merged;
       return copy;
     });
-  };
+  }, [activeModuleId, controlMode]);
+
+  const handleQuestionChange = useCallback((id: string, val: "conforme" | "non_conforme" | "sans_objet") => {
+    updateActiveModule({ [id]: val });
+  }, [updateActiveModule]);
 
   const handleAddNewModule = () => {
     const newMod = createBlankModule("");
@@ -367,7 +438,18 @@ export default function DeliveryControlForm({
     performScrollToTop();
   };
 
-  const isContainer = activeModule ? isContainerModule(activeModule.moduleType) : false;
+  const isContainer = useMemo(
+    () => (activeModule ? isContainerModule(activeModule.moduleType) : false),
+    [activeModule?.moduleType]
+  );
+  const currentModQuestions = useMemo(
+    () => (activeModule ? getModuleQuestions(activeModule.moduleType) : []),
+    [activeModule?.moduleType]
+  );
+  const currentOrdQuestions = useMemo(
+    () => (activeModule ? getOrderQuestions(activeModule.moduleType) : []),
+    [activeModule?.moduleType]
+  );
 
   return (
     <div id="delivery-control-form-top" className="w-full flex flex-col space-y-6 font-sans">
@@ -668,52 +750,16 @@ export default function DeliveryControlForm({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {CONTAINER_QUESTIONS.map((q, idx) => {
-                      const currentAns = activeModule[q.id as keyof ModuleControl];
-                      return (
-                        <div key={q.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl space-y-2.5 flex flex-col justify-between">
-                          <p className="text-[11px] font-bold text-slate-800 leading-tight">
-                            {idx + 1}. {q.text}
-                          </p>
-                          
-                          <div className="grid grid-cols-3 gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => updateActiveModule({ [q.id]: "conforme" })}
-                              className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                currentAns === "conforme"
-                                  ? "bg-emerald-600 text-white shadow-xs font-black"
-                                  : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                              }`}
-                            >
-                              Conforme
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateActiveModule({ [q.id]: "non_conforme" })}
-                              className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                currentAns === "non_conforme"
-                                  ? "bg-amber-500 text-white shadow-xs font-black"
-                                  : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                              }`}
-                            >
-                              Non Conf
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateActiveModule({ [q.id]: "sans_objet" })}
-                              className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                currentAns === "sans_objet"
-                                  ? "bg-slate-500 text-white shadow-xs font-black"
-                                  : "bg-white border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100/50"
-                              }`}
-                            >
-                              Sans Objet
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {CONTAINER_QUESTIONS.map((q, idx) => (
+                      <QuestionCard
+                        key={q.id}
+                        id={q.id}
+                        text={q.text}
+                        index={idx + 1}
+                        value={activeModule[q.id as keyof ModuleControl] as string | undefined}
+                        onChange={handleQuestionChange}
+                      />
+                    ))}
                   </div>
                 </div>
               ) : controlMode === "simplifie" ? (
@@ -728,181 +774,67 @@ export default function DeliveryControlForm({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {SIMPLIFIED_QUESTIONS.map((q, idx) => {
-                      const currentAns = activeModule[q.id as keyof ModuleControl];
-                      return (
-                        <div key={q.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl space-y-2.5">
-                          <p className="text-[11px] font-bold text-slate-800 leading-tight">
-                            {idx + 1}. {q.text}
-                          </p>
-                          
-                          <div className="grid grid-cols-3 gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => updateActiveModule({ [q.id]: "conforme" })}
-                              className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                currentAns === "conforme"
-                                  ? "bg-emerald-600 text-white shadow-xs font-black"
-                                  : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                              }`}
-                            >
-                              Conforme
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateActiveModule({ [q.id]: "non_conforme" })}
-                              className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                currentAns === "non_conforme"
-                                  ? "bg-amber-500 text-white shadow-xs font-black"
-                                  : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                              }`}
-                            >
-                              Non Conf
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => updateActiveModule({ [q.id]: "sans_objet" })}
-                              className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                currentAns === "sans_objet"
-                                  ? "bg-slate-500 text-white shadow-xs font-black"
-                                  : "bg-white border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100/50"
-                              }`}
-                            >
-                              Sans Objet
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {SIMPLIFIED_QUESTIONS.map((q, idx) => (
+                      <QuestionCard
+                        key={q.id}
+                        id={q.id}
+                        text={q.text}
+                        index={idx + 1}
+                        value={activeModule[q.id as keyof ModuleControl] as string | undefined}
+                        onChange={handleQuestionChange}
+                      />
+                    ))}
                   </div>
                 </div>
               ) : (
                 /* CONTRÔLE COMPLET: CONFORMITÉ DU MODULE + CONFORMITÉ COMMANDE */
-                (() => {
-                  const currentModQuestions = getModuleQuestions(activeModule.moduleType);
-                  const currentOrdQuestions = getOrderQuestions(activeModule.moduleType);
-                  return (
-                    <div className="space-y-6">
-                      {/* 1. Questionnaire Module Conformity (uniquement si des questions existent) */}
-                      {currentModQuestions.length > 0 && (
-                        <div className="space-y-4 text-left">
-                          <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider flex items-center gap-1.5 border-b border-slate-100 pb-2.5">
-                            <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center text-[10.5px] font-extrabold shrink-0">I</span>
-                            CONFORMITÉ DU MODULE (QUALITÉ)
-                          </h4>
+                <div className="space-y-6">
+                  {/* 1. Questionnaire Module Conformity (uniquement si des questions existent) */}
+                  {currentModQuestions.length > 0 && (
+                    <div className="space-y-4 text-left">
+                      <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider flex items-center gap-1.5 border-b border-slate-100 pb-2.5">
+                        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center text-[10.5px] font-extrabold shrink-0">I</span>
+                        CONFORMITÉ DU MODULE (QUALITÉ)
+                      </h4>
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {currentModQuestions.map((q, idx) => {
-                              const currentAns = activeModule[q.id as keyof ModuleControl];
-                              return (
-                                <div key={q.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl space-y-2.5">
-                                  <p className="text-[11px] font-bold text-slate-800 leading-tight">
-                                    {idx + 1}. {q.text}
-                                  </p>
-                                  
-                                  <div className="grid grid-cols-3 gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => updateActiveModule({ [q.id]: "conforme" })}
-                                      className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                        currentAns === "conforme"
-                                          ? "bg-emerald-600 text-white shadow-xs font-black"
-                                          : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                                      }`}
-                                    >
-                                      Conforme
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => updateActiveModule({ [q.id]: "non_conforme" })}
-                                      className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                        currentAns === "non_conforme"
-                                          ? "bg-amber-500 text-white shadow-xs font-black"
-                                          : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                                      }`}
-                                    >
-                                      Non Conf
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => updateActiveModule({ [q.id]: "sans_objet" })}
-                                      className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                        currentAns === "sans_objet"
-                                          ? "bg-slate-500 text-white shadow-xs font-black"
-                                          : "bg-white border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100/50"
-                                      }`}
-                                    >
-                                      Sans Objet
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 2. Questionnaire Order Conformity */}
-                      <div className="space-y-4 text-left">
-                        <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider flex items-center gap-1.5 border-b border-slate-100 pb-2.5">
-                          <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center text-[10.5px] font-extrabold shrink-0">
-                            {currentModQuestions.length > 0 ? "II" : "I"}
-                          </span>
-                          CONFORMITÉ À LA COMMANDE CLIENT
-                        </h4>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {currentOrdQuestions.map((q, idx) => {
-                            const currentAns = activeModule[q.id as keyof ModuleControl];
-                            return (
-                              <div key={q.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl space-y-2.5">
-                                <p className="text-[11px] font-bold text-slate-800 leading-tight">
-                                  {idx + 1}. {q.text}
-                                </p>
-                                
-                                <div className="grid grid-cols-3 gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => updateActiveModule({ [q.id]: "conforme" })}
-                                    className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                      currentAns === "conforme"
-                                        ? "bg-emerald-600 text-white shadow-xs font-black"
-                                        : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                                    }`}
-                                  >
-                                    Conforme
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => updateActiveModule({ [q.id]: "non_conforme" })}
-                                    className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                      currentAns === "non_conforme"
-                                        ? "bg-amber-500 text-white shadow-xs font-black"
-                                        : "bg-white border border-slate-200 text-slate-500 hover:text-slate-855 hover:bg-slate-100/50"
-                                    }`}
-                                  >
-                                    Non Conf
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => updateActiveModule({ [q.id]: "sans_objet" })}
-                                    className={`py-2 px-1 text-[9.5px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-                                      currentAns === "sans_objet"
-                                        ? "bg-slate-500 text-white shadow-xs font-black"
-                                        : "bg-white border border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100/50"
-                                    }`}
-                                  >
-                                    Sans Objet
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {currentModQuestions.map((q, idx) => (
+                          <QuestionCard
+                            key={q.id}
+                            id={q.id}
+                            text={q.text}
+                            index={idx + 1}
+                            value={activeModule[q.id as keyof ModuleControl] as string | undefined}
+                            onChange={handleQuestionChange}
+                          />
+                        ))}
                       </div>
                     </div>
-                  );
-                })()
+                  )}
+
+                  {/* 2. Questionnaire Order Conformity */}
+                  <div className="space-y-4 text-left">
+                    <h4 className="text-xs font-black uppercase text-slate-800 tracking-wider flex items-center gap-1.5 border-b border-slate-100 pb-2.5">
+                      <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center text-[10.5px] font-extrabold shrink-0">
+                        {currentModQuestions.length > 0 ? "II" : "I"}
+                      </span>
+                      CONFORMITÉ À LA COMMANDE CLIENT
+                    </h4>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {currentOrdQuestions.map((q, idx) => (
+                        <QuestionCard
+                          key={q.id}
+                          id={q.id}
+                          text={q.text}
+                          index={idx + 1}
+                          value={activeModule[q.id as keyof ModuleControl] as string | undefined}
+                          onChange={handleQuestionChange}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
               )}
 
               {/* Observations du contrôleur (RÉFÉRENCES PARTICULIÈRES RETIRÉES PER USER SPEC) */}

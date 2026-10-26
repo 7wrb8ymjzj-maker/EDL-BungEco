@@ -7,6 +7,7 @@ import { Inspection, ModuleType, InspectionCharacteristics, DeliveryControl, Mod
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { getSanitaireImagePath } from "./components/SanitaireReferenceImage";
+import { isModuleWithPhoto, getModulePhotoPath, getModulePhotoLabel } from "./constants/modulePhotos";
 
 /**
  * Calculates recommended repairs / works based on selected options and module type.
@@ -149,53 +150,72 @@ async function optimizeSketchForPDF(dataUrl: string): Promise<string> {
 }
 
 /**
- * Wait until images in the temporary PDF layout have decoded before html2canvas
- * captures them. An image failure is reported rather than silently printing an
- * empty frame. This does not change stored photos or the visible application.
+ * Render a saved inspection photograph directly into jsPDF.
+ * html2canvas sometimes paints photo <img> elements as empty rectangles on iOS.
+ * Drawing the JPEG directly into the final PDF avoids that rasterisation step.
+ * The photograph is fitted inside its existing HTML frame without distortion.
  */
-async function waitForPDFImages(container: HTMLElement): Promise<void> {
-  const images = Array.from(container.querySelectorAll("img"));
-  await Promise.all(images.map(async (img, index) => {
-    const source = img.getAttribute("src") || "";
-    if (!source) {
-      throw new Error(`Image PDF ${index + 1} : source absente.`);
+async function addInspectionPhotoToPDF(
+  pdf: jsPDF,
+  src: string,
+  frame: HTMLElement,
+  page: HTMLElement,
+  pdfWidth: number,
+  pdfHeight: number
+): Promise<void> {
+  if (!src || !src.startsWith("data:image/")) {
+    throw new Error("Photo absente ou format non pris en charge");
+  }
+
+  const image = new Image();
+  image.src = src;
+  await new Promise<void>((resolve, reject) => {
+    if (image.complete) {
+      if (image.naturalWidth > 0) resolve();
+      else reject(new Error("Impossible de lire la photo"));
+      return;
     }
-    if (!img.complete) {
-      await new Promise<void>((resolve, reject) => {
-        let timer: ReturnType<typeof setTimeout>;
-        const cleanup = () => {
-          clearTimeout(timer);
-          img.removeEventListener("load", onLoad);
-          img.removeEventListener("error", onError);
-        };
-        const onLoad = () => { cleanup(); resolve(); };
-        const onError = () => { cleanup(); reject(new Error(`Image PDF ${index + 1} : chargement impossible.`)); };
-        img.addEventListener("load", onLoad, { once: true });
-        img.addEventListener("error", onError, { once: true });
-        timer = setTimeout(() => {
-          cleanup();
-          reject(new Error(`Image PDF ${index + 1} : délai de chargement dépassé.`));
-        }, 15000);
-        if (img.complete) { cleanup(); resolve(); }
-      });
-    }
-    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-      throw new Error(`Image PDF ${index + 1} : image illisible.`);
-    }
-    if (typeof img.decode === "function") {
-      let decodeTimer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          img.decode(),
-          new Promise<never>((_, reject) => {
-            decodeTimer = setTimeout(() => reject(new Error(`Image PDF ${index + 1} : décodage trop long.`)), 15000);
-          }),
-        ]);
-      } finally {
-        if (decodeTimer) clearTimeout(decodeTimer);
-      }
-    }
-  }));
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Impossible de charger la photo"));
+  });
+
+  const originalWidth = image.naturalWidth;
+  const originalHeight = image.naturalHeight;
+  if (!originalWidth || !originalHeight) throw new Error("Dimensions de photo invalides");
+
+  // Photos are normally already JPEG-compressed when added to an inspection.
+  // Convert other browser-supported image formats to JPEG for jsPDF compatibility.
+  let jpeg = src;
+  if (!/^data:image\/jpeg[;,]/i.test(src)) {
+    const maxSide = 1600;
+    const ratio = Math.min(1, maxSide / Math.max(originalWidth, originalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(originalWidth * ratio));
+    canvas.height = Math.max(1, Math.round(originalHeight * ratio));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Conversion JPEG impossible");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    jpeg = canvas.toDataURL("image/jpeg", 0.82);
+  }
+
+  const pageRect = page.getBoundingClientRect();
+  const frameRect = frame.getBoundingClientRect();
+  const scaleX = pdfWidth / pageRect.width;
+  const scaleY = pdfHeight / pageRect.height;
+  // Keep the image inside the original photo frame, including a small margin.
+  const padding = 4;
+  const frameX = (frameRect.left - pageRect.left + padding) * scaleX;
+  const frameY = (frameRect.top - pageRect.top + padding) * scaleY;
+  const availableWidth = Math.max(1, (frameRect.width - 2 * padding) * scaleX);
+  const availableHeight = Math.max(1, (frameRect.height - 2 * padding) * scaleY);
+  const fit = Math.min(availableWidth / originalWidth, availableHeight / originalHeight);
+  const width = originalWidth * fit;
+  const height = originalHeight * fit;
+  const x = frameX + (availableWidth - width) / 2;
+  const y = frameY + (availableHeight - height) / 2;
+  pdf.addImage(jpeg, "JPEG", x, y, width, height);
 }
 
 /**
@@ -210,9 +230,12 @@ export async function buildInspectionPDFDoc(
 
     // Create the master container for pages
     const pagesContainer = document.createElement("div");
-    pagesContainer.style.position = "absolute";
-    pagesContainer.style.left = "-9999px";
-    pagesContainer.style.top = "-9999px";
+    pagesContainer.style.position = "fixed";
+    pagesContainer.style.left = "0";
+    pagesContainer.style.top = "0";
+    pagesContainer.style.zIndex = "-9999";
+    pagesContainer.style.opacity = "1";
+    pagesContainer.style.pointerEvents = "none";
     pagesContainer.style.width = "794px";
     pagesContainer.style.backgroundColor = "#94a3b8"; // elegant slate backup separating visual blocks
 
@@ -245,7 +268,7 @@ export async function buildInspectionPDFDoc(
         const sizeStr = c.climTaille === "autre" ? (c.climTailleAutre || "Autre") : (c.climTaille || "");
         climTrappeText = `Climatiseur (${sizeStr})`;
       } else if (c.climTrappe === "Trappe") {
-        climTrappeText = `Trappe (${c.trappeTaille || ""})`;
+        climTrappeText = `Trappe (${c.trappeTaille || "56cm"})`;
       }
 
       let sanitaireText = "Aucun";
@@ -273,6 +296,20 @@ export async function buildInspectionPDFDoc(
         eclairageText = `${typeLabel}${controlLabel ? ` (${controlLabel})` : ""}`;
       }
 
+      let panneauSupprRow = "";
+      if (c.panneauSupprime) {
+        const pText = c.panneauSupprime === "les_deux"
+          ? "Panneaux 6m Haut & Bas déposés"
+          : c.panneauSupprime === "haut"
+          ? "Panneau 6m Haut déposé"
+          : "Panneau 6m Bas déposé";
+        panneauSupprRow = `
+          <tr>
+            <td style="padding: 4px 6px;" colspan="2"><strong style="color: #dc2626;">Assemblage chantier :</strong> <span style="color: #dc2626; font-weight: bold;">${pText}</span></td>
+          </tr>
+        `;
+      }
+
       charsHtml = `
         <table style="width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.5; color: #2F2F2F;">
           <tr>
@@ -295,11 +332,12 @@ export async function buildInspectionPDFDoc(
             <td style="padding: 4px 6px;"><strong>Équipement Sanitaire :</strong> ${sanitaireText}</td>
           </tr>
           <tr>
-            <td style="padding: 4px 6px;"><strong>Clés présentes :</strong> ${c.cles ?? 0}</td>
+            <td style="padding: 4px 6px;"><strong>Clés présentes :</strong> ${c.cles !== undefined && c.cles !== null ? c.cles : "Non renseigné"}</td>
             <td style="padding: 4px 6px;"><strong>Couleur ext. :</strong> ${
               c.couleurRAL || "Standard / Non choisie"
             }</td>
           </tr>
+          ${panneauSupprRow}
         </table>
       `;
     } else if (inspection.moduleType === "S1" || inspection.moduleType === "SS1") {
@@ -329,7 +367,7 @@ export async function buildInspectionPDFDoc(
       charsHtml = `
         <table style="width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.5; color: #2F2F2F;">
           <tr>
-            <td style="padding: 4px 6px;"><strong>Clés présentes :</strong> ${c.cles ?? 0}</td>
+            <td style="padding: 4px 6px;"><strong>Clés présentes :</strong> ${c.cles !== undefined && c.cles !== null ? c.cles : "Non renseigné"}</td>
           </tr>
         </table>
       `;
@@ -345,7 +383,7 @@ export async function buildInspectionPDFDoc(
             }</td>
           </tr>
           <tr>
-            <td style="padding: 4px 6px;" colspan="2"><strong>Clés présentes :</strong> ${c.cles ?? 0}</td>
+            <td style="padding: 4px 6px;" colspan="2"><strong>Clés présentes :</strong> ${c.cles !== undefined && c.cles !== null ? c.cles : "Non renseigné"}</td>
           </tr>
         </table>
       `;
@@ -452,6 +490,26 @@ export async function buildInspectionPDFDoc(
         drawingsHtml = `
           <div style="border: 1.5px dashed #cbd5e1; border-radius: 8px; background-color: #f8fafc; padding: 8px; text-align: center; color: #64748b; font-size: 9.5px; height: 220px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 75%; max-width: 540px; margin: 0 auto;">
             Image de référence non disponible pour ce type.
+          </div>
+        `;
+      }
+    } else if (isModuleWithPhoto(inspection.moduleType)) {
+      const photoPath = getModulePhotoPath(inspection.moduleType);
+      const label = getModulePhotoLabel(inspection.moduleType);
+
+      if (photoPath) {
+        drawingsHtml = `
+          <div style="border: 1.5px solid #cbd5e1; border-radius: 8px; overflow: hidden; background-color: #ffffff; padding: 8px 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 220px; box-sizing: border-box; width: 75%; max-width: 540px; margin: 0 auto;">
+            <img src="${photoPath}" style="max-height: 180px; max-width: 100%; width: auto; height: auto; object-fit: contain; display: block; margin: 0 auto;" />
+            <div style="font-size: 8px; font-family: monospace; color: #D96B00; text-align: center; margin-top: 6px; font-weight: bold;">
+              Photo certifiée de référence : ${label}
+            </div>
+          </div>
+        `;
+      } else {
+        drawingsHtml = `
+          <div style="border: 1.5px dashed #cbd5e1; border-radius: 8px; background-color: #f8fafc; padding: 8px; text-align: center; color: #64748b; font-size: 9.5px; height: 220px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 75%; max-width: 540px; margin: 0 auto;">
+            Photo de référence non disponible pour ce type.
           </div>
         `;
       }
@@ -579,7 +637,7 @@ export async function buildInspectionPDFDoc(
             <td style="text-align: center; padding: 2px;">
               <div style="display: inline-block; border: 1.5px solid #E2E8F0; border-radius: 8px; padding: 5px; background-color: #F8F9FA;">
                 <div style="width: 320px; height: 165px; overflow: hidden; border-radius: 4px; border: 1px solid #CBD5E1; background-color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 2px;">
-                  <img src="${page1Photos[0]}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
+                  <img data-pdf-photo="true" src="${page1Photos[0]}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
                 </div>
                 <div style="font-size: 8.5px; color: #2F2F2F; font-weight: 800; margin-top: 3px;">Photo #1 du constat</div>
                 <div style="font-size: 7.5px; color: #64748b; font-family: monospace; font-weight: bold;">Prise le ${formattedDate}</div>
@@ -596,7 +654,7 @@ export async function buildInspectionPDFDoc(
               <td style="width: 50%; text-align: center; padding: 2px 5px; vertical-align: top; box-sizing: border-box;">
                 <div style="border: 1.5px solid #E2E8F0; border-radius: 8px; padding: 5px; background-color: #F8F9FA;">
                   <div style="width: 300px; height: 160px; overflow: hidden; border-radius: 4px; border: 1px solid #CBD5E1; background-color: #FFFFFF; display: flex; align-items: center; justify-content: center; margin: 0 auto; box-sizing: border-box; padding: 2px;">
-                    <img src="${src}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
+                    <img data-pdf-photo="true" src="${src}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
                   </div>
                   <div style="font-size: 8.5px; color: #2F2F2F; font-weight: 800; margin-top: 3px;">Photo #${idx + 1} du constat</div>
                   <div style="font-size: 7.5px; color: #64748b; font-family: monospace; font-weight: bold;">Prise le ${formattedDate}</div>
@@ -614,7 +672,7 @@ export async function buildInspectionPDFDoc(
               <td style="width: 33.33%; text-align: center; padding: 2px 3px; vertical-align: top; box-sizing: border-box;">
                 <div style="border: 1.5px solid #E2E8F0; border-radius: 8px; padding: 5px; background-color: #F8F9FA;">
                   <div style="width: 215px; height: 140px; overflow: hidden; border-radius: 4px; border: 1px solid #CBD5E1; background-color: #FFFFFF; display: flex; align-items: center; justify-content: center; margin: 0 auto; box-sizing: border-box; padding: 2px;">
-                    <img src="${src}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
+                    <img data-pdf-photo="true" src="${src}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
                   </div>
                   <div style="font-size: 8px; color: #2F2F2F; font-weight: 800; margin-top: 3px;">Photo #${idx + 1} du constat</div>
                   <div style="font-size: 7.5px; color: #64748b; font-family: monospace; font-weight: bold;">Prise le ${formattedDate}</div>
@@ -780,7 +838,7 @@ export async function buildInspectionPDFDoc(
             <td style="width: 50%; padding: 8px; text-align: center; vertical-align: top; box-sizing: border-box;">
               <div style="border: 1.5px solid #E2E8F0; border-radius: 8px; padding: 8px; background-color: #F8F9FA; box-shadow: 0 2px 6px rgba(0,0,0,0.03); display: block;">
                 <div style="width: 310px; height: 210px; overflow: hidden; border-radius: 6px; border: 1.5px solid #E2E8F0; background-color: #FFFFFF; display: flex; align-items: center; justify-content: center; margin: 0 auto; box-sizing: border-box;">
-                  <img src="${src}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
+                  <img data-pdf-photo="true" src="${src}" style="max-width: 100%; max-height: 100%; object-fit: contain; display: block;" />
                 </div>
                 <div style="font-size: 10px; color: #2F2F2F; font-weight: 800; margin-top: 6px;">
                   Photo #${globalIdx + 1} du constat
@@ -833,8 +891,29 @@ export async function buildInspectionPDFDoc(
 
     document.body.appendChild(pagesContainer);
 
-    onProgress?.("Vérification du chargement des photos et des plans...");
-    await waitForPDFImages(pagesContainer);
+    // Pre-decode all images in DOM to prevent blank/grey rectangles in Safari/iOS
+    onProgress?.("Chargement et décodage des photos du constat...");
+    const allImgs = Array.from(pagesContainer.querySelectorAll("img"));
+    await Promise.all(
+      allImgs.map(async (img) => {
+        try {
+          if (!img.complete) {
+            await new Promise((res) => {
+              img.onload = res;
+              img.onerror = res;
+              setTimeout(res, 3000);
+            });
+          }
+          if ("decode" in img) {
+            await img.decode();
+          }
+        } catch {
+          // ignore individual decode errors
+        }
+      })
+    );
+    // Allow browser rendering tick to composite decoded frames
+    await new Promise((res) => requestAnimationFrame(() => setTimeout(res, 80)));
 
     onProgress?.("Génération des pages PDF de l'état des lieux...");
     const pageDivs = Array.from(pagesContainer.children) as HTMLDivElement[];
@@ -857,11 +936,27 @@ export async function buildInspectionPDFDoc(
       const canvas = await html2canvas(pageDivs[i], {
         scale: 2, // High DPI density
         useCORS: true,
+        allowTaint: true,
         logging: false,
         backgroundColor: "#ffffff",
+        imageTimeout: 15000,
+        onclone: (_clonedDoc, clonedElement) => {
+          clonedElement.querySelectorAll("img").forEach((img) => {
+            img.loading = "eager";
+          });
+        },
       });
       const imgData = canvas.toDataURL("image/jpeg", 0.95);
       pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
+
+      // Overlay original photos directly in the PDF. This bypasses the iOS
+      // html2canvas image-rendering issue without changing the PDF layout.
+      const photoTags = Array.from(pageDivs[i].querySelectorAll<HTMLImageElement>('img[data-pdf-photo="true"]'));
+      for (const photoTag of photoTags) {
+        const frame = photoTag.parentElement;
+        if (!frame) throw new Error("Cadre de photographie introuvable");
+        await addInspectionPhotoToPDF(pdf, photoTag.src, frame, pageDivs[i], pdfWidth, pdfHeight);
+      }
     }
 
     onProgress?.("Finalisation du document...");
@@ -1038,9 +1133,12 @@ export async function buildDeliveryControlPDFDoc(
     onProgress?.("Préparation du rapport de contrôle...");
 
     const printContainer = document.createElement("div");
-    printContainer.style.position = "absolute";
-    printContainer.style.left = "-9999px";
-    printContainer.style.top = "-9999px";
+    printContainer.style.position = "fixed";
+    printContainer.style.left = "0";
+    printContainer.style.top = "0";
+    printContainer.style.zIndex = "-9999";
+    printContainer.style.opacity = "1";
+    printContainer.style.pointerEvents = "none";
     printContainer.style.width = "790px"; // A4 Standard responsive width
     printContainer.style.backgroundColor = "#ffffff";
     printContainer.style.padding = "25px";
@@ -1358,15 +1456,42 @@ export async function buildDeliveryControlPDFDoc(
     printContainer.innerHTML = htmlContent;
     document.body.appendChild(printContainer);
 
-    onProgress?.("Vérification du chargement des photos du contrôle...");
-    await waitForPDFImages(printContainer);
+    // Pre-decode all images in DOM to prevent blank/grey rectangles in Safari/iOS
+    onProgress?.("Chargement et décodage des photos du contrôle...");
+    const allImgs = Array.from(printContainer.querySelectorAll("img"));
+    await Promise.all(
+      allImgs.map(async (img) => {
+        try {
+          if (!img.complete) {
+            await new Promise((res) => {
+              img.onload = res;
+              img.onerror = res;
+              setTimeout(res, 3000);
+            });
+          }
+          if ("decode" in img) {
+            await img.decode();
+          }
+        } catch {
+          // ignore individual decode errors
+        }
+      })
+    );
+    await new Promise((res) => requestAnimationFrame(() => setTimeout(res, 80)));
 
     onProgress?.("Prise des clichés du rapport de contrôle...");
     const canvas = await html2canvas(printContainer, {
       scale: 2, // High resolution retina rendering
       useCORS: true,
+      allowTaint: true,
       logging: false,
       backgroundColor: "#ffffff",
+      imageTimeout: 15000,
+      onclone: (_clonedDoc, clonedElement) => {
+        clonedElement.querySelectorAll("img").forEach((img) => {
+          img.loading = "eager";
+        });
+      },
     });
 
     onProgress?.("Génération des pages PDF de la livraison...");
@@ -1491,6 +1616,7 @@ export async function shareOrEmailPDF({
   subject,
   body,
   recipientEmail = "contact@bungeco.fr",
+  photos,
 }: {
   blob: Blob;
   fileName: string;
@@ -1499,16 +1625,52 @@ export async function shareOrEmailPDF({
   subject: string;
   body: string;
   recipientEmail?: string;
+  photos?: string[];
 }): Promise<{ shared: boolean; method: "share" | "mailto" }> {
   try {
-    const file = new File([blob], fileName, { type: "application/pdf" });
+    const pdfFile = new File([blob], fileName, { type: "application/pdf" });
 
-    // Check if navigator.share with files is supported
+    // Convert individual photos (base64) into individual JPG File attachments
+    const photoFiles: File[] = [];
+    if (photos && photos.length > 0) {
+      const baseClean = fileName.replace(/\.pdf$/i, "");
+      for (let idx = 0; idx < photos.length; idx++) {
+        const p = photos[idx];
+        if (p && p.startsWith("data:image/")) {
+          try {
+            const res = await fetch(p);
+            const pBlob = await res.blob();
+            const pFile = new File([pBlob], `Photo_${idx + 1}_${baseClean}.jpg`, { type: "image/jpeg" });
+            photoFiles.push(pFile);
+          } catch {
+            // ignore individual photo conversion failure
+          }
+        }
+      }
+    }
+
+    const allFiles: File[] = [pdfFile, ...photoFiles];
+    let filesToShare: File[] = [pdfFile];
+
+    // Check if navigator.share with all files (PDF + JPGs) is supported
     if (
       typeof navigator !== "undefined" &&
-      typeof navigator.share === "function" &&
       typeof navigator.canShare === "function" &&
-      navigator.canShare({ files: [file] })
+      photoFiles.length > 0 &&
+      navigator.canShare({ files: allFiles })
+    ) {
+      filesToShare = allFiles;
+    } else if (
+      typeof navigator !== "undefined" &&
+      typeof navigator.canShare === "function" &&
+      navigator.canShare({ files: [pdfFile] })
+    ) {
+      filesToShare = [pdfFile];
+    }
+
+    if (
+      typeof navigator !== "undefined" &&
+      typeof navigator.share === "function"
     ) {
       try {
         const shareText = text.includes(recipientEmail)
@@ -1517,13 +1679,28 @@ export async function shareOrEmailPDF({
         await navigator.share({
           title,
           text: shareText,
-          files: [file],
+          files: filesToShare,
         });
         return { shared: true, method: "share" };
       } catch (err: any) {
         if (err?.name === "AbortError") {
           // User closed the share sheet
           return { shared: false, method: "share" };
+        }
+        // Fallback: if multiple files failed on this browser, retry with PDF alone
+        if (filesToShare.length > 1) {
+          try {
+            await navigator.share({
+              title,
+              text,
+              files: [pdfFile],
+            });
+            return { shared: true, method: "share" };
+          } catch (singleErr: any) {
+            if (singleErr?.name === "AbortError") {
+              return { shared: false, method: "share" };
+            }
+          }
         }
         console.warn("navigator.share failed, using mailto fallback:", err);
       }
@@ -1543,3 +1720,4 @@ export async function shareOrEmailPDF({
 
   return { shared: true, method: "mailto" };
 }
+
